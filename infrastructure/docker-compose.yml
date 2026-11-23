@@ -1,0 +1,89 @@
+name: ai-image-platform
+
+# Local/staging starting point - NOT an HA production topology (see docs/PROJECT_SPEC.md §7).
+# Run from the repo root:  docker compose -f infrastructure/docker-compose.yml --env-file .env up --build
+
+x-app-env: &app-env
+  # Overrides env_file so the DB password is defined once (DB_PASSWORD).
+  DATABASE_URL: postgresql+asyncpg://imageapp:${DB_PASSWORD:?DB_PASSWORD required}@postgres:5432/image_platform
+
+services:
+  migrate:
+    build: ../services/backend
+    env_file: ../.env
+    environment: *app-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [internal]
+    restart: "no"
+
+  api:
+    build: ../services/backend
+    restart: unless-stopped
+    env_file: ../.env
+    environment: *app-env
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [internal]
+
+  worker:
+    build: ../services/worker
+    restart: unless-stopped
+    env_file: ../.env
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [internal]
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: image_platform
+      POSTGRES_USER: imageapp
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U imageapp -d image_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [internal]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [internal]
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  internal:
+    driver: bridge
