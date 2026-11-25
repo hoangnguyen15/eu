@@ -44,6 +44,22 @@ async def assert_ws_rejected(url: str, headers: dict[str, str] | None = None) ->
     assert e.value.rcvd is not None and e.value.rcvd.code == 4401
 
 
+@pytest.fixture(autouse=True)
+async def _isolated_queue(stack: dict) -> None:
+    """Jobs left QUEUED by other test modules (no agent online there) would be
+    dispatched to this module's agents; cancel them so each test sees only its own."""
+    import asyncpg
+
+    from tests.conftest import _test_db_url
+
+    conn = await asyncpg.connect(_test_db_url("postgresql"))
+    try:
+        await conn.execute("UPDATE generations SET status = 'CANCELLED', error_code = 'TEST_ISOLATION' "
+                           "WHERE status = 'QUEUED'")
+    finally:
+        await conn.close()
+
+
 @contextlib.asynccontextmanager
 async def running_agent(stack: dict, client: httpx.AsyncClient, admin: dict, *, account: str | None = None,
                         **kw: Any) -> Any:
@@ -167,7 +183,8 @@ async def test_end_to_end_mock_pipeline(stack: dict, client: httpx.AsyncClient, 
         assert gen["status"] == "completed", gen
         assert gen["progress"] == 100 and gen["credit_state"] == "settled"
         assert gen["provider_metadata"]["model"] == "mock-image-v1"
-        assert len(gen["assets"]) == 2 and len(agent.completed) == 1
+        assert len(gen["assets"]) == 2
+        assert sum(1 for o in agent.offers if o["generation_id"] == gid) == 1
 
         async with httpx.AsyncClient(timeout=30, follow_redirects=False) as raw:
             for asset in gen["assets"]:
@@ -306,12 +323,12 @@ async def test_many_jobs_across_workers_no_double_dispatch(stack: dict, client: 
         gids = [r.json()["data"]["generation_id"] for r in rs]
         gens = await asyncio.gather(*[wait_status(client, u["headers"], g, TERMINAL, timeout=60) for g in gids])
         assert all(g["status"] == "completed" for g in gens), [g["status"] for g in gens]
-        task_ids = a1.offers + a2.offers + a3.offers
+        task_ids = [o for o in a1.offers + a2.offers + a3.offers if o["generation_id"] in gids]
         per_gen: dict[str, int] = {}
         for o in task_ids:
             per_gen[o["generation_id"]] = per_gen.get(o["generation_id"], 0) + 1
         assert all(v == 1 for v in per_gen.values()) and len(per_gen) == 12
-        assert all(len(a.offers) > 0 for a in (a1, a2, a3))  # load spread across the fleet
+        assert all(any(o["generation_id"] in gids for o in a.offers) for a in (a1, a2, a3))  # load spread
         c = (await client.get("/api/v1/user/credits", headers=u["headers"])).json()["data"]
         assert c == {"balance": 48, "reserved_balance": 0, "available_balance": 48}
 
@@ -364,3 +381,64 @@ async def test_cancel_dispatched_offer_revokes_task(stack: dict, client: httpx.A
         await wait_for(lambda: _async_true(bool(agent.cancels)), 5)
         ack = await agent.send_event("TASK_ACCEPT", {"task_id": agent.offers[0]["task_id"]})
         assert ack["status"] == "rejected"
+
+
+async def test_agent_returning_task_before_start_is_requeued(stack: dict, client: httpx.AsyncClient,
+                                                             admin: dict) -> None:
+    u = await register_and_login(client)
+    async with running_agent(stack, client, admin, execute=False) as agent:
+        r = await client.post("/api/v1/generations", json=GEN, headers=u["headers"])
+        gid = r.json()["data"]["generation_id"]
+        await wait_for(lambda: _async_true(bool(agent.offers)), 10)
+        first = agent.offers[0]["task_id"]
+        await wait_for(lambda: _async_true(any(a.get("result", {}).get("lease_expires_at")
+                                               for a in agent.acks.values())), 5)
+        ack = await agent.send_event("TASK_FAILED", {"task_id": first, "error_code": "NOT_STARTED"})
+        assert ack["status"] == "ok" and ack["result"]["generation_status"] == "queued"
+        await wait_for(lambda: _async_true(len(agent.offers) >= 2), 10)
+        assert agent.offers[1]["generation_id"] == gid and agent.offers[1]["task_id"] != first
+        assert agent.offers[1]["attempt"] == 2
+
+
+async def test_outcome_unknown_goes_to_review(stack: dict, client: httpx.AsyncClient, admin: dict) -> None:
+    u = await register_and_login(client)
+    async with running_agent(stack, client, admin, execute=False) as agent:
+        r = await client.post("/api/v1/generations", json=GEN, headers=u["headers"])
+        gid = r.json()["data"]["generation_id"]
+        await wait_for(lambda: _async_true(bool(agent.offers)), 10)
+        task_id = agent.offers[0]["task_id"]
+        await wait_for(lambda: _async_true(any(a.get("result", {}).get("lease_expires_at")
+                                               for a in agent.acks.values())), 5)
+        await agent.send_event("TASK_STARTED", {"task_id": task_id})
+        # NOT_STARTED after the server saw TASK_STARTED is treated as unknown outcome.
+        await agent.send_event("TASK_FAILED", {"task_id": task_id, "error_code": "NOT_STARTED"})
+        gen = await wait_status(client, u["headers"], gid, TERMINAL, timeout=10)
+        assert gen["status"] == "review_required" and gen["error_code"] == "OUTCOME_UNKNOWN"
+        assert len(agent.offers) == 1
+
+
+async def test_fleet_of_ten_workers(stack: dict, client: httpx.AsyncClient, admin: dict) -> None:
+    """>= 10 concurrent workers, 40 jobs from several users: every job completes
+    exactly once, no slot is double-booked, credits settle per user."""
+    users = [await register_and_login(client) for _ in range(4)]
+    for u in users:
+        uid = (await client.get("/api/v1/user/profile", headers=u["headers"])).json()["data"]["id"]
+        await client.post("/api/v1/admin/credits/grant", json={"user_id": uid, "amount": 10}, headers=admin["headers"])
+    async with contextlib.AsyncExitStack() as stack_cm:
+        agents = [await stack_cm.enter_async_context(running_agent(stack, client, admin, capacity=2))
+                  for _ in range(10)]
+        reqs = [client.post("/api/v1/generations", json={**GEN, "prompt": f"fleet {i}"},
+                            headers=users[i % 4]["headers"]) for i in range(40)]
+        rs = await asyncio.gather(*reqs)
+        assert all(r.status_code == 201 for r in rs), [r.text for r in rs if r.status_code != 201]
+        jobs = [(users[i % 4], r.json()["data"]["generation_id"]) for i, r in enumerate(rs)]
+        gens = await asyncio.gather(*[wait_status(client, u["headers"], g, TERMINAL, timeout=90) for u, g in jobs])
+        assert [g["status"] for g in gens] == ["completed"] * 40
+        gids = {g for _, g in jobs}
+        offers = [o for a in agents for o in a.offers if o["generation_id"] in gids]
+        assert len(offers) == 40 and len({o["generation_id"] for o in offers}) == 40  # no double dispatch
+        busy = sum(1 for a in agents if any(o["generation_id"] in gids for o in a.offers))
+        assert busy >= 8, f"only {busy}/10 workers received work"
+        for u in users:
+            c = (await client.get("/api/v1/user/credits", headers=u["headers"])).json()["data"]
+            assert c == {"balance": 10, "reserved_balance": 0, "available_balance": 10}

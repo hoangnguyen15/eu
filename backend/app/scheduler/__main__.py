@@ -10,6 +10,7 @@ import logging
 import os
 import signal
 import socket
+from pathlib import Path
 
 from redis.exceptions import ResponseError
 
@@ -20,6 +21,7 @@ from app.core.redis import GENERATION_STREAM, SCHEDULER_GROUP, close_redis, get_
 from app.scheduler.dispatcher import tick
 
 log = logging.getLogger("scheduler")
+ALIVE_FILE = Path(os.environ.get("SCHEDULER_ALIVE_FILE", "/tmp/scheduler.alive"))
 
 
 async def _ensure_group() -> None:
@@ -40,6 +42,7 @@ async def run(stop: asyncio.Event) -> None:
     while not stop.is_set():
         try:
             stats = await tick(factory)
+            ALIVE_FILE.touch()  # liveness probe for the container healthcheck
             if any(stats.values()):
                 log.info("scheduler tick", extra={"extra_fields": stats})
             block_ms = int(s.scheduler_poll_interval_seconds * 1000)

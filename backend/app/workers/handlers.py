@@ -381,9 +381,17 @@ async def handle_task_failed(db: AsyncSession, worker_id: uuid.UUID, payload: p.
     gen, lease = loaded
     if lease.status not in (LeaseStatus.ACCEPTED.value, LeaseStatus.RUNNING.value, LeaseStatus.UPLOADING.value):
         return rejected("LEASE_NOT_ACTIVE", lease_status=lease.status)
+    code = payload.error_code.upper()
+    if code == "NOT_STARTED":
+        if lease.status == LeaseStatus.ACCEPTED.value:
+            # The agent never invoked the provider: handing the job back is safe.
+            lease.status = LeaseStatus.FAILED.value
+            lease.finished_at = _now()
+            after = await requeue_or_dead_letter(db, gen, reason="agent returned task before start")
+            return Outcome(result={"generation_status": gen.status.lower()}, after_commit=after)
+        code = "OUTCOME_UNKNOWN"  # server saw TASK_STARTED: the provider may have run
     lease.status = LeaseStatus.FAILED.value
     lease.finished_at = _now()
-    code = payload.error_code.upper()
 
     # Mark the account/session state. We do NOT move the job to another
     # account: limits and re-authentication are surfaced, not evaded.
