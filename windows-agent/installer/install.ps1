@@ -110,6 +110,11 @@ foreach ($path in @($DataDir, $settingsPath)) {
     Set-Acl -Path $path -AclObject $acl
 }
 
+# Event Log source (the virtual service account may not create it itself).
+if (-not [System.Diagnostics.EventLog]::SourceExists($ServiceName)) {
+    [System.Diagnostics.EventLog]::CreateEventSource($ServiceName, "Application")
+}
+
 Write-Step "Starting service"
 Start-Service -Name $ServiceName
 (Get-Service -Name $ServiceName).WaitForStatus('Running', '00:00:30')

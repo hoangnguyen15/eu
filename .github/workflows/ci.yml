@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install ruff==0.11.9
+      - run: ruff check backend/app backend/tests backend/scripts --config backend/ruff.toml
+
+  stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate throwaway .env
+        run: |
+          gen() { openssl rand -hex 24; }
+          sed -e "s/^ENVIRONMENT=.*/ENVIRONMENT=development/" \
+              -e "s/CHANGE_ME_postgres_password/$(gen)/" -e "s/CHANGE_ME_redis_password/$(gen)/" \
+              -e "s/CHANGE_ME_at_least_32_random_characters_long/$(gen)/" \
+              -e "s/CHANGE_ME_at_least_24_random_characters/$(gen)/" \
+              -e "s/CHANGE_ME_admin_password/$(gen)/" -e "s/CHANGE_ME_minio_password/$(gen)/" \
+              .env.example > .env
+      - name: Backend tests (unit + integration, Docker)
+        run: docker compose --profile test run --rm --build tests
+      - name: End-to-end with the .NET FlowAgent (agent unit tests run during its image build)
+        run: ./scripts/e2e.sh
+      - name: Failure injection
+        run: ./scripts/resilience.sh
+      - name: Logs on failure
+        if: failure()
+        run: docker compose --profile e2e logs --no-color | tail -n 400
+
+  agent-windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: {dotnet-version: "8.0.x"}
+      - name: Test + publish win-x64
+        shell: pwsh
+        run: ./windows-agent/publish.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FlowAgent-win-x64
+          path: windows-agent/publish/*.zip*

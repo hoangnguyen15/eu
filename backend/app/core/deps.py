@@ -1,6 +1,7 @@
 """FastAPI dependencies: DB session, current user, RBAC and rate limiting."""
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -8,6 +9,7 @@ from dataclasses import dataclass
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -71,17 +73,20 @@ async def require_admin(user: CurrentUser = Depends(get_current_user)) -> Curren
 
 
 async def hit_rate_limit(scope: str, ident: str, limit: int, window_seconds: int = 60) -> None:
-    """Fixed-window counter in Redis. Fails open if Redis is unavailable so an
-    outage of the limiter does not take the API down (logged by caller)."""
+    """Fixed-window counter in Redis. Fails open (logged) if Redis is unavailable
+    so an outage of the limiter alone does not take the API down."""
     if not get_settings().rate_limit_enabled or limit <= 0:
         return
     window = int(time.time() // window_seconds)
     key = f"rl:{scope}:{ident}:{window}"
-    redis = get_redis()
-    pipe = redis.pipeline()
-    pipe.incr(key)
-    pipe.expire(key, window_seconds + 1)
-    count, _ = await pipe.execute()
+    try:
+        pipe = get_redis().pipeline()
+        pipe.incr(key)
+        pipe.expire(key, window_seconds + 1)
+        count, _ = await pipe.execute()
+    except RedisError:
+        logging.getLogger(__name__).warning("rate limiter unavailable; allowing request", exc_info=True)
+        return
     if int(count) > limit:
         retry_after = window_seconds - int(time.time() % window_seconds)
         raise RateLimitedError("Too many requests", headers={"Retry-After": str(retry_after)},
