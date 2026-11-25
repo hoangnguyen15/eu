@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import InsufficientCreditsError
@@ -59,12 +59,23 @@ async def reserve(db: AsyncSession, gen: Generation) -> CreditWallet:
     """Reserve `gen.credit_cost` for a generation being created in the same transaction."""
     if gen.credit_state != CreditState.NONE.value:
         raise RuntimeError("credits already reserved for generation")
-    wallet = await get_or_create_wallet(db, gen.user_id, for_update=True)
-    available = wallet.balance - wallet.reserved_balance
-    if gen.credit_cost > available:
-        raise InsufficientCreditsError(
-            "Not enough credits", details={"required": gen.credit_cost, "available": available})
-    wallet.reserved_balance += gen.credit_cost
+    # Single conditional UPDATE: takes the row lock and checks funds in one
+    # round trip, which shortens lock hold time under bursts from one user.
+    row = (await db.execute(
+        update(CreditWallet)
+        .where(CreditWallet.user_id == gen.user_id,
+               CreditWallet.balance - CreditWallet.reserved_balance >= gen.credit_cost)
+        .values(reserved_balance=CreditWallet.reserved_balance + gen.credit_cost)
+        .returning(CreditWallet.id)
+        .execution_options(synchronize_session=False)
+    )).scalar_one_or_none()
+    if row is None:
+        wallet = await get_or_create_wallet(db, gen.user_id)
+        await db.refresh(wallet)
+        raise InsufficientCreditsError("Not enough credits", details={
+            "required": gen.credit_cost, "available": wallet.balance - wallet.reserved_balance})
+    wallet = await db.get(CreditWallet, row, populate_existing=True)
+    assert wallet is not None
     gen.credit_state = CreditState.RESERVED.value
     _ledger(db, wallet, CreditTxType.RESERVE, gen.credit_cost, generation_id=gen.id)
     await db.flush()

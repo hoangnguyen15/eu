@@ -127,7 +127,15 @@ def init_pki(out_dir: str, server_names: list[str], *, force: bool = False) -> N
     out.mkdir(parents=True, exist_ok=True)
     ca_crt, ca_key_path = out / "ca.crt", out / "ca.key"
     if ca_crt.exists() and not force:
-        print(f"PKI already present in {out} (use --force to recreate)")
+        if _server_cert_covers(out / "server.crt", server_names):
+            print(f"PKI already present in {out} (use --force to recreate)")
+            return
+        # Hostname/IP changed: re-issue only the gateway certificate with the
+        # existing CA, so already-enrolled agents keep working.
+        ca = x509.load_pem_x509_certificate(ca_crt.read_bytes())
+        ca_key_existing = serialization.load_pem_private_key(ca_key_path.read_bytes(), password=None)
+        _issue_server_cert(out, ca, ca_key_existing, server_names)
+        print(f"Gateway certificate re-issued for {', '.join(server_names)} (CA unchanged)")
         return
     now = _now()
     ca_key = ec.generate_private_key(ec.SECP384R1())
@@ -143,31 +151,52 @@ def init_pki(out_dir: str, server_names: list[str], *, force: bool = False) -> N
         .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
         .sign(ca_key, hashes.SHA384())
     )
-    srv_key = ec.generate_private_key(ec.SECP256R1())
+    pem = serialization.Encoding.PEM
+    _write(ca_crt, ca.public_bytes(pem), 0o644)
+    _write(ca_key_path, ca_key.private_bytes(pem, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()),
+           0o640)
+    _issue_server_cert(out, ca, ca_key, server_names)
+    print(f"PKI written to {out}: ca.crt, ca.key, server.crt, server.key (SAN: {', '.join(server_names)})")
+
+
+def _sans(server_names: list[str]) -> list[x509.GeneralName]:
     sans: list[x509.GeneralName] = []
     for n in server_names:
         try:
             sans.append(x509.IPAddress(ipaddress.ip_address(n)))
         except ValueError:
             sans.append(x509.DNSName(n))
+    return sans
+
+
+def _server_cert_covers(path: Path, server_names: list[str]) -> bool:
+    if not path.exists():
+        return False
+    try:
+        cert = x509.load_pem_x509_certificate(path.read_bytes())
+        present = set(cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value)
+    except (ValueError, x509.ExtensionNotFound):
+        return False
+    return set(_sans(server_names)) <= present and cert.not_valid_after_utc > _now() + dt.timedelta(days=30)
+
+
+def _issue_server_cert(out: Path, ca: x509.Certificate, ca_key: object, server_names: list[str]) -> None:
+    now = _now()
+    srv_key = ec.generate_private_key(ec.SECP256R1())
     srv = (
         x509.CertificateBuilder()
         .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, server_names[0])]))
-        .issuer_name(ca_name).public_key(srv_key.public_key()).serial_number(x509.random_serial_number())
+        .issuer_name(ca.subject).public_key(srv_key.public_key()).serial_number(x509.random_serial_number())
         .not_valid_before(now - dt.timedelta(minutes=5)).not_valid_after(now + dt.timedelta(days=825))
-        .add_extension(x509.SubjectAlternativeName(sans), critical=False)
+        .add_extension(x509.SubjectAlternativeName(_sans(server_names)), critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
-        .sign(ca_key, hashes.SHA256())
+        .sign(ca_key, hashes.SHA256())  # type: ignore[arg-type]
     )
     pem = serialization.Encoding.PEM
-    nopass = serialization.NoEncryption()
-    pkcs8 = serialization.PrivateFormat.PKCS8
-    _write(ca_crt, ca.public_bytes(pem), 0o644)
-    _write(ca_key_path, ca_key.private_bytes(pem, pkcs8, nopass), 0o640)
     _write(out / "server.crt", srv.public_bytes(pem) + ca.public_bytes(pem), 0o644)
-    _write(out / "server.key", srv_key.private_bytes(pem, pkcs8, nopass), 0o640)
-    print(f"PKI written to {out}: ca.crt, ca.key, server.crt, server.key (SAN: {', '.join(server_names)})")
+    _write(out / "server.key", srv_key.private_bytes(pem, serialization.PrivateFormat.PKCS8,
+                                                     serialization.NoEncryption()), 0o640)
 
 
 def main() -> None:

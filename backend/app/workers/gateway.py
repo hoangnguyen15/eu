@@ -24,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.config import get_settings
 from app.core.db import session_factory
-from app.core.redis import agent_channel, get_redis
+from app.core.redis import GENERATION_STREAM, agent_channel, get_redis
 from app.core.security import constant_time_equals
 from app.models import Generation, LeaseStatus, TaskLease, WorkerEvent, Workstation, WorkstationStatus
 from app.scheduler.offers import build_offer
@@ -213,6 +213,7 @@ async def _handle_register(conn: AgentConnection, env: p.Envelope) -> None:
     })
     for offer in offers:
         await conn.send(offer)
+    await wake_scheduler("worker_registered")  # new capacity is available right away
 
 
 async def _handle_heartbeat(conn: AgentConnection, env: p.Envelope) -> None:
@@ -299,7 +300,22 @@ async def process_event(worker_id: uuid.UUID, env: p.Envelope) -> tuple[str, dic
             await fn()
         except Exception:
             log.exception("post-commit side effect failed")
+    if env.type in _SLOT_RELEASING:
+        await wake_scheduler("slot_released")
     return outcome.status, outcome.result, False
+
+
+# Events after which a worker slot may be free: wake the scheduler immediately
+# instead of waiting for its next poll tick (removes ~1 s idle gap per job).
+_SLOT_RELEASING = {p.MsgType.TASK_COMPLETED, p.MsgType.TASK_FAILED, p.MsgType.TASK_REJECT,
+                   p.MsgType.UPLOAD_COMPLETED}
+
+
+async def wake_scheduler(reason: str) -> None:
+    try:
+        await get_redis().xadd(GENERATION_STREAM, {"wake": reason}, maxlen=100_000, approximate=True)
+    except Exception:
+        log.debug("scheduler wake-up failed", exc_info=True)
 
 
 def _redact(payload: dict[str, Any]) -> dict[str, Any]:

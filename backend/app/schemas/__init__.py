@@ -217,3 +217,15 @@ class AgentEnrollResponse(BaseModel):
     certificate_pem: str
     ca_certificate_pem: str
     expires_at: datetime
+
+
+class ProvisionAccount(StrictModel):
+    google_email: EmailStr
+    profile_ref: str = Field(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9._-]+$")
+    provider: str = Field(default="mock", max_length=32)
+
+
+class WorkstationProvision(StrictModel):
+    workstation_name: str = Field(min_length=1, max_length=128)
+    capacity: int = Field(default=2, ge=1, le=64)
+    accounts: list[ProvisionAccount] = Field(default_factory=list, max_length=16)

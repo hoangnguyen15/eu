@@ -28,7 +28,7 @@ dotnet publish $project -c $Configuration -r $Runtime --self-contained true `
     -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $out
 if ($LASTEXITCODE -ne 0) { throw "publish failed" }
 
-Copy-Item (Join-Path $PSScriptRoot "installer\*.ps1") $out -Force
+Copy-Item (Join-Path $PSScriptRoot "installer\*") $out -Force
 $version = (Get-Item (Join-Path $out "FlowAgent.exe")).VersionInfo.ProductVersion
 $zip = Join-Path $OutputRoot "FlowAgent-$version-$Runtime.zip"
 if (Test-Path $zip) { Remove-Item $zip }

@@ -156,6 +156,9 @@ public sealed class JobExecutor
             var jobId = await provider.GenerateAsync(request, ct);
             ProviderJobStatus status;
             var lastProgress = -1;
+            // Adaptive polling: every 50 ms during the first 2 s (fast providers),
+            // then backing off gradually to 1 s for long-running jobs.
+            var polling = System.Diagnostics.Stopwatch.StartNew();
             while (true)
             {
                 status = await provider.GetStatusAsync(jobId, ct);
@@ -166,7 +169,7 @@ public sealed class JobExecutor
                     await _link.SendEphemeralAsync(MsgType.TaskProgress,
                         new JsonObject { ["task_id"] = taskId, ["progress"] = Math.Min(95, status.Progress) }, ct);
                 }
-                await Task.Delay(500, ct);
+                await Task.Delay(PollDelay(polling.Elapsed), ct);
             }
             if (status.State == ProviderJobState.Failed)
                 throw new ProviderException(status.ErrorCode ?? "PROVIDER_ERROR", status.ErrorMessage ?? "provider failed");
@@ -220,6 +223,14 @@ public sealed class JobExecutor
             Finish(taskId);
         }
     }
+
+    internal static TimeSpan PollDelay(TimeSpan elapsed) => elapsed.TotalSeconds switch
+    {
+        < 2 => TimeSpan.FromMilliseconds(50),
+        < 10 => TimeSpan.FromMilliseconds(200),
+        < 60 => TimeSpan.FromMilliseconds(500),
+        _ => TimeSpan.FromSeconds(1),
+    };
 
     internal static async Task AwaitAck(Task<Ack> ack, DateTimeOffset deadline, CancellationToken ct)
     {

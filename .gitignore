@@ -1,5 +1,7 @@
 # secrets / local config
 .env
+.env.bak.*
+.env.tmp
 *.env.local
 certs/
 *.pfx
@@ -19,3 +21,4 @@ publish/
 # misc
 .DS_Store
 *.log
+dist/

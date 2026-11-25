@@ -132,6 +132,7 @@ Envelope: `{"type", "id", "ts", "payload"}`. State-changing agent events carry `
 | A→S | `TASK_COMPLETED` | `provider, model, provider_metadata` → rejected unless all images verified |
 | A→S | `TASK_FAILED` | `error_code, error_message, retry_after_seconds` (`NOT_STARTED` → safe requeue; `OUTCOME_UNKNOWN` → review) |
 | S→A | `TASK_CANCEL` | `task_id, reason` (user cancel before accept, or lease expired) |
+| S→A | `SESSION_CHECK` | admin asked to re-check sessions (after an operator signed in manually on the machine) |
 | S→A | `EVENT_ACK`, `ERROR` | |
 
 ## Admin (`role=admin`)
@@ -146,6 +147,18 @@ Envelope: `{"type", "id", "ts", "payload"}`. State-changing agent events carry `
 | GET | `/admin/generations?status=REVIEW_REQUIRED` |
 | POST | `/admin/generations/{id}/resolve` `{action: refund|charge}` |
 | GET | `/admin/dead-letters`, `/admin/audit-logs?resource_type=` |
+| GET | `/admin/overview` — fleet/queue snapshot: workstations by status, busy/online slots, generations by status, 24 h count/avg/p95, oldest queued age, account session states |
+| GET | `/admin/jobs?status=ALL\|QUEUED,RUNNING,…&limit=` — all users' jobs with worker, account, progress, duration, signed thumbnails |
+| GET | `/admin/sessions` — provider sessions per workstation (status only; credentials never leave the workstation) |
+| POST | `/admin/workstations/{id}/session-check` — sends `SESSION_CHECK`; the agent re-checks and re-reports `SESSION_STATUS` |
+| POST | `/admin/workstations/{id}/enable` |
+| POST | `/admin/workstations/provision` `{workstation_name, capacity, accounts[{google_email, profile_ref, provider}]}` → `flowagent-config.json` content (gateway URL, CA PEM, single-use token). Accounts must be `AUTHORIZED` (`422 ACCOUNT_NOT_AUTHORIZED`) |
+
+## Bundled web UIs
+
+* `/app/` — mobile-first demo client (register/login, create, realtime progress, results, failure scenarios, load test).
+* `/admin/` — admin console (overview, workstations, provider sessions, jobs, review/DLQ, provisioning, audit).
+* Served by the backend with a strict CSP (`script-src 'self'`, images only from the storage origin).
 
 ## Health
 

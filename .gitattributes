@@ -1,0 +1,5 @@
+# Windows installer files must keep CRLF line endings
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+windows-agent/installer/*.txt text eol=crlf
+*.sh text eol=lf

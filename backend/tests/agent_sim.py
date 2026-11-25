@@ -41,6 +41,7 @@ class SimAgent:
         self.offers: list[dict[str, Any]] = []
         self.acks: dict[str, dict[str, Any]] = {}
         self.cancels: list[dict[str, Any]] = []
+        self.session_checks = 0
         self.completed: list[str] = []
         self.failed: list[str] = []
         self.received: list[dict[str, Any]] = []
@@ -121,6 +122,9 @@ class SimAgent:
                         asyncio.create_task(self._run_task(pl))
                 elif t == "TASK_CANCEL":
                     self.cancels.append(pl)
+                elif t == "SESSION_CHECK":
+                    self.session_checks += 1
+                    asyncio.create_task(self.send_event("SESSION_STATUS", {"sessions": self.sessions}, wait=False))
         except websockets.ConnectionClosed as exc:
             self.close_code = exc.rcvd.code if exc.rcvd else None
         finally:

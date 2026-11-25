@@ -207,6 +207,9 @@ public sealed class Worker : BackgroundService
                 case MsgType.TaskCancel:
                     _jobs.OnCancel(payload);
                     break;
+                case MsgType.SessionCheck:
+                    _ = Task.Run(() => _sessions.RecheckAsync(_serviceStopping), CancellationToken.None);
+                    break;
                 case MsgType.Error:
                     _log.LogWarning("Server error: {Payload}", payload.ToJsonString());
                     break;

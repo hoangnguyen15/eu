@@ -36,23 +36,34 @@ Flutter Mobile ──REST/WS──► Central API (FastAPI) ──► PostgreSQL
 | `backend/migrations` | Alembic migrations (UUID PK, FK, index, partial unique, JSONB) |
 | `backend/tests` | Unit + integration tests (Postgres/Redis/MinIO thật, API + scheduler chạy thật) |
 | `windows-agent/FlowAgent` | .NET 8 Worker Service: mTLS WSS, SQLite outbox, slots, uploader, heartbeat |
-| `windows-agent/installer` | `install.ps1`, `uninstall.ps1`; `publish.ps1` build bản win-x64 self-contained |
+| `windows-agent/installer` | `Install-FlowAgent.cmd` (double-click), `install.ps1` (`-ConfigFile`, `-DryRun`), `uninstall.ps1`, README tiếng Việt |
+| `backend/app/web` | Web client mobile-first `/app/` và trang quản trị `/admin/` (không cần build) |
 | `gateway/` | nginx template: mTLS termination cho agent |
-| `scripts/` | `e2e.sh`, `resilience.sh`, `backup-db.sh`, `restore-db.sh` |
-| `docs/` | [API](docs/API.md), [Deployment](docs/DEPLOYMENT.md), [Test report](docs/TEST-REPORT.md), [OpenAPI](docs/openapi.json) |
+| `scripts/` | `init-env.sh`, `bootstrap.sh`, `package-agent.sh`, `e2e.sh`, `resilience.sh`, `ui-check.js`, `backup-db.sh`, `restore-db.sh`; `backend/scripts/bench.py` |
+| `docs/` | [Kiến trúc & luồng](docs/ARCHITECTURE.md), [Server macOS](docs/MACOS-SERVER.md), [API](docs/API.md), [Deployment](docs/DEPLOYMENT.md), [Test report](docs/TEST-REPORT.md), [Đối chiếu yêu cầu](docs/REQUIREMENTS-CHECKLIST.md), [OpenAPI](docs/openapi.json) |
 
-## Chạy local
+## Chạy local / server LAN
 
-Yêu cầu: Docker + Docker Compose v2.
+Yêu cầu: Docker + Docker Compose v2. **Server macOS:** xem [docs/MACOS-SERVER.md](docs/MACOS-SERVER.md).
 
 ```bash
-cp .env.example .env
-# thay toàn bộ CHANGE_ME (vd. openssl rand -hex 32); với local đặt ENVIRONMENT=development để bật /docs
-docker compose up -d --build --wait
-curl -s localhost:8000/api/v1/health
+./scripts/init-env.sh            # .env với secret ngẫu nhiên + IP LAN (PUBLIC_HOST)
+./scripts/bootstrap.sh           # build, migrate, khởi động, tạo admin; in ra các địa chỉ
 ```
 
-Services: `postgres`, `redis`, `minio`, `pki-init` (tạo CA + cert gateway, 1 lần), `migrate` (Alembic, 1 lần), `backend` (:8000), `scheduler`, `agent-gateway` (:8443, mTLS).
+| Trang | Địa chỉ |
+|---|---|
+| Web client (demo mobile) | `http://<PUBLIC_HOST>:8000/app/` |
+| Trang quản trị máy trạm | `http://<PUBLIC_HOST>:8000/admin/` |
+| Swagger (khi `ENVIRONMENT=development`) | `http://<PUBLIC_HOST>:8000/docs` |
+
+Services: `postgres`, `redis`, `minio`, `pki-init` (CA + cert gateway; tự cấp lại khi đổi IP), `migrate` (Alembic), `backend` (:8000), `scheduler`, `agent-gateway` (:8443, mTLS).
+
+### Cài máy trạm Windows
+```bash
+./scripts/package-agent.sh       # → dist/FlowAgent-<version>-win-x64.zip
+```
+Trang quản trị → *Thêm máy trạm* → tải `flowagent-config.json` → chép cạnh gói đã giải nén trên máy trạm → `Install-FlowAgent.cmd` (Run as administrator). Chi tiết: `windows-agent/installer/README-CAI-DAT.txt`.
 
 ### Chạy end-to-end với agent .NET thật
 
@@ -66,8 +77,10 @@ Services: `postgres`, `redis`, `minio`, `pki-init` (tạo CA + cert gateway, 1 l
 ### Tests
 
 ```bash
-docker compose --profile test run --rm tests            # 55 tests backend (unit + integration)
-cd windows-agent && dotnet test FlowAgent.Tests          # 10 tests agent (cũng chạy trong docker build)
+docker compose --profile test run --rm tests            # 59 tests backend (unit + integration)
+cd windows-agent && dotnet test FlowAgent.Tests          # 14 tests agent (cũng chạy trong docker build)
+node scripts/ui-check.js                                 # 16 kiểm tra giao diện bằng Chromium (cần: npm i playwright)
+python backend/scripts/bench.py --admin-email … --admin-password … -n 20 -c 20   # đo latency/throughput
 ```
 
 Chạy test backend trên máy host: cần Python 3.12, `pip install -r backend/requirements-dev.txt`, và Postgres/Redis/S3 — biến `TEST_PG_DSN`, `TEST_REDIS_URL`, `TEST_S3_URL`, `TEST_S3_KEY`, `TEST_S3_SECRET` (xem `backend/tests/conftest.py`).
@@ -94,6 +107,7 @@ Hoặc qua admin API (`/api/v1/admin/...`, role `admin`).
 
 - Mặc định 1 credit / ảnh, tặng 10 credit khi đăng ký (cấu hình qua `.env`).
 - MinIO upstream không còn phát hành image cộng đồng; compose dùng `pgsty/minio` (bản build cộng đồng, pin theo digest), đổi bằng `MINIO_IMAGE`. Production nên dùng Cloudflare R2/S3.
+- Đăng nhập Google Flow/provider trên máy trạm do người vận hành làm thủ công; trang quản trị chỉ hiển thị trạng thái và yêu cầu agent kiểm tra lại phiên.
 - Agent .NET đã được build cho `win-x64` (cross-compile) và chạy E2E trên Linux; **chưa được chạy thực tế trên Windows Server 2022** trong môi trường này (DPAPI, `NT SERVICE\FlowAgent`, SChannel client-cert là các phần riêng Windows chưa được kiểm thử). `install.ps1`/`uninstall.ps1` mới được kiểm tra cú pháp bằng PowerShell parser.
 - `ApprovedImageProvider` là template HTTP trung tính; cần map sang API thật của nhà cung cấp trước khi bật.
 - Rate limit là fixed-window trên Redis, fail-open (có log cảnh báo) khi Redis không truy cập được.

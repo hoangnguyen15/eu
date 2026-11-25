@@ -19,6 +19,7 @@ public static class MsgType
     public const string UploadRequest = "UPLOAD_REQUEST";
     public const string UploadCompleted = "UPLOAD_COMPLETED";
     public const string SessionStatus = "SESSION_STATUS";
+    public const string SessionCheck = "SESSION_CHECK";
     public const string EventAck = "EVENT_ACK";
     public const string Error = "ERROR";
 }

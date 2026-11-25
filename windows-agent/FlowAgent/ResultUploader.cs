@@ -40,7 +40,8 @@ public sealed class ResultUploader
         var targets = (await reqAck).Result["uploads"].Deserialize<List<UploadTarget>>(Json.Options)
                       ?? throw new UploadRejectedException("no upload targets");
 
-        foreach (var target in targets)
+        // Upload all images in parallel, each with bounded retries.
+        await Task.WhenAll(targets.Select(async target =>
         {
             var file = manifest.Files.Single(f => f.Index == target.Index);
             for (var attempt = 1; ; attempt++)
@@ -48,7 +49,7 @@ public sealed class ResultUploader
                 try
                 {
                     await _api.UploadAsync(target, file.Path, ct);
-                    break;
+                    return;
                 }
                 catch (HttpRequestException ex) when (attempt < 4)
                 {
@@ -57,7 +58,7 @@ public sealed class ResultUploader
                     await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), ct);
                 }
             }
-        }
+        }));
 
         var uploaded = targets.Select(t =>
         {

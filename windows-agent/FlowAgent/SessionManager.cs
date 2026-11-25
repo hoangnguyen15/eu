@@ -37,6 +37,18 @@ public sealed class SessionManager
         _log.LogWarning("Profile {Profile} requires re-authentication by an operator on this machine", profileRef);
     }
 
+    /// <summary>
+    /// Operator asked (via the admin console) to re-check sessions, typically
+    /// after signing in again manually on this machine: drop local
+    /// AUTH_REQUIRED overrides and report fresh provider-checked status.
+    /// </summary>
+    public async Task RecheckAsync(CancellationToken ct)
+    {
+        _overrides.Clear();
+        _log.LogInformation("Session re-check requested by server");
+        await ReportAsync(ct);
+    }
+
     public async Task<List<SessionReport>> BuildReportAsync(CancellationToken ct)
     {
         var reports = new List<SessionReport>();

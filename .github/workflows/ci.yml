@@ -35,6 +35,12 @@ jobs:
         run: ./scripts/e2e.sh
       - name: Failure injection
         run: ./scripts/resilience.sh
+      - name: Browser checks (web client + admin console)
+        run: |
+          npm i --no-save playwright@1.63.0
+          npx playwright install --with-deps chromium
+          set -a; . ./.env; set +a
+          BASE=http://localhost:8000 node scripts/ui-check.js
       - name: Logs on failure
         if: failure()
         run: docker compose --profile e2e logs --no-color | tail -n 400

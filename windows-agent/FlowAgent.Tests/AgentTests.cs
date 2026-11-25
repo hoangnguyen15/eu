@@ -150,3 +150,14 @@ public class MessageTests
         Assert.Equal("HEARTBEAT", env["type"]!.GetValue<string>());
     }
 }
+
+public class PollingTests
+{
+    [Theory]
+    [InlineData(0.5, 50)]
+    [InlineData(5, 200)]
+    [InlineData(30, 500)]
+    [InlineData(120, 1000)]
+    public void PollDelayBacksOffGradually(double elapsedSeconds, int expectedMs) =>
+        Assert.Equal(expectedMs, JobExecutor.PollDelay(TimeSpan.FromSeconds(elapsedSeconds)).TotalMilliseconds);
+}

@@ -5,10 +5,13 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -62,9 +65,24 @@ class _TooLarge(Exception):
     pass
 
 
+WEB_DIR = Path(__file__).parent / "web"
+
+
+def _web_csp() -> bytes:
+    """CSP for the bundled web client / admin console: same-origin scripts only,
+    images additionally from the object-storage origin used in signed URLs."""
+    s = get_settings()
+    storage = s.s3_public_endpoint_url or s.s3_endpoint_url or ""
+    parts = urlsplit(storage)
+    img_origin = f" {parts.scheme}://{parts.netloc}" if parts.scheme and parts.netloc else " https:"
+    return (f"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:{img_origin}; "
+            "connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'").encode()
+
+
 class SecurityHeadersMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
+        self.csp = _web_csp()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -86,6 +104,8 @@ class SecurityHeadersMiddleware:
                     (b"referrer-policy", b"no-referrer"),
                     (b"cache-control", b"no-store"),
                 ]
+                if scope.get("path", "").startswith(("/app", "/admin", "/shared")):
+                    headers.append((b"content-security-policy", self.csp))
                 message["headers"] = headers
             await send(message)
 
@@ -152,6 +172,16 @@ def create_app() -> FastAPI:
     app.include_router(api)
     app.include_router(websocket.router)
     app.include_router(gateway.router)
+
+    # Bundled web UIs (no build step): mobile-first demo client and admin console.
+    app.mount("/app", StaticFiles(directory=WEB_DIR / "client", html=True), name="web-client")
+    app.mount("/admin", StaticFiles(directory=WEB_DIR / "admin", html=True), name="web-admin")
+    app.mount("/shared", StaticFiles(directory=WEB_DIR / "shared"), name="web-shared")
+
+    @app.get("/", include_in_schema=False)
+    async def root() -> RedirectResponse:
+        return RedirectResponse("/app/")
+
     return app
 
 

@@ -275,37 +275,43 @@ class VerifiedFile:
 
 async def verify_uploaded_files(issued: list[dict[str, Any]], files: list[p.UploadedFile]
                                 ) -> tuple[list[VerifiedFile], str | None]:
-    """Downloads each object from the private bucket and validates it.
-    Pure I/O; runs *outside* the DB transaction. Returns (files, error_code)."""
+    """Downloads each object from the private bucket and validates it — all
+    files in parallel. Pure I/O; runs *outside* the DB transaction.
+    Returns (files, error_code)."""
     s = get_settings()
     by_index = {k["index"]: k for k in issued}
-    verified: list[VerifiedFile] = []
-    for f in files:
-        spec = by_index.get(f.index)
-        if spec is None or spec["storage_key"] != f.storage_key:
-            return [], "UNKNOWN_STORAGE_KEY"
+    if sorted(f.index for f in files) != sorted(by_index):
+        return [], "FILE_COUNT_MISMATCH"
+
+    async def one(f: p.UploadedFile) -> VerifiedFile | str:
+        spec = by_index[f.index]
+        if spec["storage_key"] != f.storage_key:
+            return "UNKNOWN_STORAGE_KEY"
         if f.sha256.lower() != spec["sha256"]:
-            return [], "CHECKSUM_MISMATCH"
+            return "CHECKSUM_MISMATCH"
         try:
             data = await s3.get_bytes(f.storage_key, s.max_image_bytes)
         except s3.ObjectMissing:
-            return [], "OBJECT_MISSING"
+            return "OBJECT_MISSING"
         except s3.ObjectTooLarge:
-            return [], "FILE_TOO_LARGE"
+            return "FILE_TOO_LARGE"
         try:
             info = await asyncio.to_thread(
                 images.validate_image, data, allowed_mime=s.allowed_image_mime_types, max_bytes=s.max_image_bytes,
                 max_pixels=s.max_image_pixels, expected_sha256=spec["sha256"], declared_mime=spec["mime_type"])
         except images.ImageValidationError as exc:
             log.warning("uploaded image rejected", extra={"extra_fields": {"key": f.storage_key, "code": exc.code}})
-            return [], exc.code
+            return exc.code
         thumb = await asyncio.to_thread(images.make_thumbnail, data, s.thumbnail_size)
         thumb_key = f.storage_key.rsplit(".", 1)[0] + ".thumb.webp"
         await s3.put_bytes(thumb_key, thumb, "image/webp")
-        verified.append(VerifiedFile(f.index, f.storage_key, thumb_key, info))
-    if sorted(v.index for v in verified) != sorted(k["index"] for k in issued):
-        return [], "FILE_COUNT_MISMATCH"
-    return verified, None
+        return VerifiedFile(f.index, f.storage_key, thumb_key, info)
+
+    results = await asyncio.gather(*(one(f) for f in files))
+    errors = [r for r in results if isinstance(r, str)]
+    if errors:
+        return [], errors[0]
+    return [r for r in results if isinstance(r, VerifiedFile)], None
 
 
 async def handle_upload_completed(db: AsyncSession, worker_id: uuid.UUID, payload: p.UploadCompletedPayload,

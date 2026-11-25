@@ -1194,6 +1194,272 @@
         }
       }
     },
+    "/api/v1/admin/overview": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Overview",
+        "description": "Fleet + queue snapshot for the admin console.",
+        "operationId": "overview_api_v1_admin_overview_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_dict_"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/jobs": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Jobs",
+        "description": "All users' generations with worker/account/progress, newest first.",
+        "operationId": "jobs_api_v1_admin_jobs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 24
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_list_dict__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/sessions": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Sessions",
+        "description": "Provider sessions (e.g. Google Flow sign-in state) per workstation. Status\nonly: credentials/cookies never leave the workstation.",
+        "operationId": "sessions_api_v1_admin_sessions_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_list_dict__"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/workstations/{workstation_id}/session-check": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Request Session Check",
+        "description": "Ask the agent to re-check and re-report its sessions, e.g. after an operator\nsigned in again manually on that machine.",
+        "operationId": "request_session_check_api_v1_admin_workstations__workstation_id__session_check_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workstation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Workstation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_dict_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/workstations/{workstation_id}/enable": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Enable Workstation",
+        "operationId": "enable_workstation_api_v1_admin_workstations__workstation_id__enable_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workstation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Workstation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_dict_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/workstations/provision": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Provision Workstation",
+        "description": "Creates a single-use enrollment token and returns the config file the\nWindows installer consumes (flowagent-config.json). Accounts must already be\nregistered and AUTHORIZED; only opaque profile references are included.",
+        "operationId": "provision_workstation_api_v1_admin_workstations_provision_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkstationProvision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_dict_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/health": {
       "get": {
         "tags": [
@@ -2249,6 +2515,35 @@
         ],
         "title": "LoginRequest"
       },
+      "ProvisionAccount": {
+        "properties": {
+          "google_email": {
+            "type": "string",
+            "format": "email",
+            "title": "Google Email"
+          },
+          "profile_ref": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$",
+            "title": "Profile Ref"
+          },
+          "provider": {
+            "type": "string",
+            "maxLength": 32,
+            "title": "Provider",
+            "default": "mock"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "google_email",
+          "profile_ref"
+        ],
+        "title": "ProvisionAccount"
+      },
       "RefreshRequest": {
         "properties": {
           "refresh_token": {
@@ -2505,6 +2800,37 @@
           "cert_expires_at"
         ],
         "title": "WorkstationOut"
+      },
+      "WorkstationProvision": {
+        "properties": {
+          "workstation_name": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Workstation Name"
+          },
+          "capacity": {
+            "type": "integer",
+            "maximum": 64.0,
+            "minimum": 1.0,
+            "title": "Capacity",
+            "default": 2
+          },
+          "accounts": {
+            "items": {
+              "$ref": "#/components/schemas/ProvisionAccount"
+            },
+            "type": "array",
+            "maxItems": 16,
+            "title": "Accounts"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "workstation_name"
+        ],
+        "title": "WorkstationProvision"
       }
     },
     "securitySchemes": {
