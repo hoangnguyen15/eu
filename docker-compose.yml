@@ -1,0 +1,222 @@
+# Google Flow Automation Platform — central stack.
+#   docker compose up -d --build            # API, scheduler, gateway, Postgres, Redis, MinIO
+#   docker compose --profile e2e up -d      # + a Linux container running the FlowAgent (.NET)
+#   docker compose --profile test run --rm tests
+# Secrets come from .env (see .env.example); nothing secret is committed.
+
+x-backend-env: &backend-env
+  ENVIRONMENT: ${ENVIRONMENT:-production}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-flow}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-flow}
+  REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379/0
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+  GATEWAY_SHARED_SECRET: ${GATEWAY_SHARED_SECRET:?set GATEWAY_SHARED_SECRET}
+  CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-}
+  TRUSTED_PROXY_COUNT: ${TRUSTED_PROXY_COUNT:-0}
+  MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-1048576}
+  S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://minio:9000}
+  S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-http://${PUBLIC_HOST:-localhost}:${MINIO_PORT:-9000}}
+  AGENT_GATEWAY_PUBLIC_URL: ${AGENT_GATEWAY_PUBLIC_URL:-https://${PUBLIC_HOST:-localhost}:${GATEWAY_PORT:-8443}}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-${MINIO_ROOT_USER:-flowminio}}
+  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}}
+  S3_BUCKET: ${S3_BUCKET:-flow-assets}
+  S3_CREATE_BUCKET: ${S3_CREATE_BUCKET:-true}
+  PKI_CA_CERT_PATH: /certs/ca.crt
+  PKI_CA_KEY_PATH: /certs/ca.key
+  ENABLED_PROVIDERS: ${ENABLED_PROVIDERS:-mock}
+  DEFAULT_PROVIDER: ${DEFAULT_PROVIDER:-mock}
+  SIGNUP_BONUS_CREDITS: ${SIGNUP_BONUS_CREDITS:-10}
+  CREDIT_COST_PER_IMAGE: ${CREDIT_COST_PER_IMAGE:-1}
+  MAX_IMAGES_PER_GENERATION: ${MAX_IMAGES_PER_GENERATION:-4}
+  OFFER_TTL_SECONDS: ${OFFER_TTL_SECONDS:-15}
+  JOB_TIMEOUT_SECONDS: ${JOB_TIMEOUT_SECONDS:-600}
+  WORKER_OFFLINE_AFTER_SECONDS: ${WORKER_OFFLINE_AFTER_SECONDS:-90}
+  HEARTBEAT_INTERVAL_SECONDS: ${HEARTBEAT_INTERVAL_SECONDS:-25}
+  MAX_DISPATCH_ATTEMPTS: ${MAX_DISPATCH_ATTEMPTS:-5}
+  MAX_CONCURRENT_JOBS_PER_ACCOUNT: ${MAX_CONCURRENT_JOBS_PER_ACCOUNT:-2}
+  GOOGLE_FLOW_ENABLED: ${GOOGLE_FLOW_ENABLED:-false}
+  GOOGLE_FLOW_INTEGRATION_CONFIRMED: ${GOOGLE_FLOW_INTEGRATION_CONFIRMED:-false}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-flow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-flow}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD}"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+  minio:
+    # Upstream MinIO no longer publishes community images; pgsty/minio is a
+    # community build of the same server. Override with MINIO_IMAGE if needed.
+    image: ${MINIO_IMAGE:-pgsty/minio@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372}
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-flowminio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # One-shot: create the agent CA + gateway server certificate on first start.
+  pki-init:
+    build: &backend-build
+      context: ./backend
+      target: runtime
+    image: flow-backend:latest
+    command: ["python", "-m", "app.cli", "init-pki", "--out", "/certs",
+              "--server-name", "${GATEWAY_HOSTNAME:-${PUBLIC_HOST:-localhost}}", "--server-name", "localhost",
+              "--server-name", "agent-gateway", "--server-name", "127.0.0.1"]
+    volumes:
+      - certs:/certs
+    restart: "no"
+
+  # One-shot: apply Alembic migrations before API / scheduler start.
+  migrate:
+    image: flow-backend:latest
+    build: *backend-build
+    command: ["alembic", "upgrade", "head"]
+    environment: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    image: flow-backend:latest
+    build: *backend-build
+    restart: unless-stopped
+    environment: *backend-env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - certs:/certs:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      pki-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  scheduler:
+    image: flow-backend:latest
+    build: *backend-build
+    restart: unless-stopped
+    command: ["python", "-m", "app.scheduler"]
+    environment: *backend-env
+    volumes:
+      - certs:/certs:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(0 if time.time()-os.path.getmtime('/tmp/scheduler.alive') < 60 else 1)"]
+      interval: 15s
+      timeout: 3s
+      retries: 4
+      start_period: 20s
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # mTLS termination for Windows agents (outbound WSS from the workers).
+  agent-gateway:
+    image: ${NGINX_IMAGE:-nginx:1.27-alpine}
+    restart: unless-stopped
+    environment:
+      GATEWAY_SHARED_SECRET: ${GATEWAY_SHARED_SECRET}
+      BACKEND_UPSTREAM: http://backend:8000
+      NGINX_ENVSUBST_FILTER: "^(GATEWAY_SHARED_SECRET|BACKEND_UPSTREAM)$"
+    ports:
+      - "${GATEWAY_PORT:-8443}:8443"
+    volumes:
+      - ./gateway/agent-gateway.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - certs:/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 8443"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # Linux build of the .NET FlowAgent for local development / end-to-end tests.
+  # It reaches the gateway and storage through PUBLIC_HOST exactly like a real
+  # worker. With PUBLIC_HOST=localhost (Linux) use host networking; with a LAN
+  # IP (macOS / Docker Desktop) set AGENT_NETWORK_MODE=bridge.
+  flow-agent:
+    profiles: ["e2e"]
+    build:
+      context: ./windows-agent
+    image: flow-agent:latest
+    network_mode: ${AGENT_NETWORK_MODE:-host}
+    restart: unless-stopped
+    environment:
+      FLOWAGENT_Agent__ServerBaseUrl: https://${PUBLIC_HOST:-localhost}:${GATEWAY_PORT:-8443}
+      FLOWAGENT_Agent__CaCertificatePath: /certs/ca.crt
+      FLOWAGENT_Agent__EnrollmentToken: ${AGENT_ENROLLMENT_TOKEN:-}
+      FLOWAGENT_Agent__Capacity: ${AGENT_CAPACITY:-2}
+      FLOWAGENT_Agent__HeartbeatSeconds: ${HEARTBEAT_INTERVAL_SECONDS:-25}
+      FLOWAGENT_Agent__Accounts__0__GoogleEmail: ${AGENT_ACCOUNT_EMAIL:-mock-account@example.com}
+      FLOWAGENT_Agent__Accounts__0__ProfileRef: profile-1
+      FLOWAGENT_Agent__Accounts__0__Provider: mock
+    volumes:
+      - certs:/certs:ro
+      - agentdata:/var/lib/flowagent
+
+  tests:
+    profiles: ["test"]
+    build:
+      context: ./backend
+      target: test
+    image: flow-backend-test:latest
+    environment:
+      TEST_PG_DSN: postgresql://${POSTGRES_USER:-flow}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-flow}
+      TEST_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      TEST_S3_URL: http://minio:9000
+      TEST_S3_KEY: ${MINIO_ROOT_USER:-flowminio}
+      TEST_S3_SECRET: ${MINIO_ROOT_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  certs:
+  agentdata:

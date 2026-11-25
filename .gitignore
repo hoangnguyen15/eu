@@ -1,0 +1,24 @@
+# secrets / local config
+.env
+.env.bak.*
+.env.tmp
+*.env.local
+certs/
+*.pfx
+*.key
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+# dotnet
+bin/
+obj/
+publish/
+*.user
+# misc
+.DS_Store
+*.log
+dist/

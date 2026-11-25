@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flow Admin Console</title>
+  <link rel="stylesheet" href="/shared/base.css">
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+  <section id="login" class="login card stack hidden">
+    <h1>Flow Admin</h1>
+    <p class="muted small">Quản lý máy trạm, phiên đăng nhập provider, tiến trình và kết quả công việc.</p>
+    <div><label for="email">Email admin</label><input id="email" type="email" autocomplete="username"></div>
+    <div><label for="password">Mật khẩu</label><input id="password" type="password" autocomplete="current-password"></div>
+    <button id="btn-login">Đăng nhập</button>
+    <p id="login-error" class="small error-text" role="alert"></p>
+  </section>
+
+  <div id="app" class="layout hidden">
+    <nav class="sidebar" aria-label="Điều hướng">
+      <div class="brand">Flow Admin</div>
+      <button class="nav active" data-tab="overview">Tổng quan</button>
+      <button class="nav" data-tab="workstations">Máy trạm</button>
+      <button class="nav" data-tab="sessions">Phiên đăng nhập</button>
+      <button class="nav" data-tab="jobs">Công việc</button>
+      <button class="nav" data-tab="review">Cần xử lý <span id="review-count" class="count hidden"></span></button>
+      <button class="nav" data-tab="provision">Thêm máy trạm</button>
+      <button class="nav" data-tab="audit">Nhật ký</button>
+      <div class="spacer"></div>
+      <div class="small muted" id="who"></div>
+      <div class="small muted">Cập nhật: <span id="updated">—</span></div>
+      <button id="btn-logout" class="secondary small">Đăng xuất</button>
+    </nav>
+
+    <main class="content">
+      <section id="tab-overview" class="tab stack">
+        <h1>Tổng quan hệ thống</h1>
+        <div id="kpis" class="kpis"></div>
+        <div class="grid-2">
+          <div class="card"><h2>Máy trạm</h2><div id="ov-ws" class="table-wrap"></div></div>
+          <div class="card"><h2>Công việc gần đây</h2><div id="ov-jobs" class="table-wrap"></div></div>
+        </div>
+      </section>
+
+      <section id="tab-workstations" class="tab stack hidden">
+        <div class="row"><h1>Máy trạm</h1><div class="spacer"></div>
+          <button class="secondary small" data-goto="provision">+ Thêm máy trạm</button></div>
+        <div class="card table-wrap" id="ws-table"></div>
+        <p class="small muted">Máy trạm được coi là OFFLINE nếu không gửi heartbeat trong 90 giây. "Vô hiệu hoá"
+          chặn kết nối ngay cả khi chứng chỉ còn hạn.</p>
+      </section>
+
+      <section id="tab-sessions" class="tab stack hidden">
+        <h1>Phiên đăng nhập trên máy trạm</h1>
+        <div class="card note small">
+          <strong>Cách đăng nhập lại Google Flow / provider:</strong> người vận hành mở trình duyệt/ứng dụng trên
+          <em>chính máy trạm đó</em> và tự đăng nhập bằng profile tương ứng. Hệ thống không lưu mật khẩu, không
+          đọc/chuyển cookie hay session token, và không tự động đăng nhập. Sau khi đăng nhập xong, bấm
+          <em>Kiểm tra lại phiên</em> để agent báo trạng thái mới. Connector Google Flow hiện ở trạng thái
+          <strong>DISABLED</strong> cho đến khi có phương thức tích hợp được Google cho phép.
+        </div>
+        <div class="card table-wrap" id="sessions-table"></div>
+        <div class="card stack">
+          <h2>Tài khoản provider được uỷ quyền</h2>
+          <div id="accounts-table" class="table-wrap"></div>
+          <form id="account-form" class="grid-form">
+            <div><label for="acct-email">Email tài khoản</label><input id="acct-email" type="email" required></div>
+            <div class="wide"><label for="acct-attest">Căn cứ được phép sử dụng (bắt buộc)</label>
+              <input id="acct-attest" minlength="10" required placeholder="vd. Hợp đồng/văn bản cho phép số …"></div>
+            <div><label>&nbsp;</label><button type="submit">Thêm & uỷ quyền</button></div>
+          </form>
+        </div>
+      </section>
+
+      <section id="tab-jobs" class="tab stack hidden">
+        <div class="row"><h1>Công việc</h1><div class="spacer"></div>
+          <select id="job-filter" class="narrow" aria-label="Lọc trạng thái">
+            <option value="ALL">Tất cả</option>
+            <option value="QUEUED,DISPATCHED,RUNNING,UPLOADING">Đang xử lý</option>
+            <option value="COMPLETED">Hoàn thành</option>
+            <option value="FAILED,AUTH_REQUIRED,PROVIDER_LIMITED">Lỗi</option>
+            <option value="REVIEW_REQUIRED">Cần xem xét</option>
+            <option value="CANCELLED">Đã huỷ</option>
+          </select></div>
+        <div class="card table-wrap" id="jobs-table"></div>
+      </section>
+
+      <section id="tab-review" class="tab stack hidden">
+        <h1>Cần xử lý</h1>
+        <div class="card stack"><h2>Cần xem xét (credit đang giữ)</h2><div id="review-table" class="table-wrap"></div></div>
+        <div class="card stack"><h2>Dead-letter (phân phối thất bại quá số lần)</h2><div id="dlq-table" class="table-wrap"></div></div>
+      </section>
+
+      <section id="tab-provision" class="tab stack hidden">
+        <h1>Thêm máy trạm</h1>
+        <form id="provision-form" class="card stack">
+          <div class="grid-form">
+            <div><label for="pv-name">Tên máy trạm</label><input id="pv-name" required maxlength="128" value="WIN-WORKER-01"></div>
+            <div><label for="pv-cap">Số slot song song</label><input id="pv-cap" type="number" min="1" max="64" value="2"></div>
+          </div>
+          <div>
+            <label>Tài khoản đặt trên máy này (đã uỷ quyền)</label>
+            <div id="pv-accounts" class="stack"></div>
+          </div>
+          <button type="submit">Tạo cấu hình cài đặt</button>
+        </form>
+        <div id="provision-result" class="card stack hidden"></div>
+      </section>
+
+      <section id="tab-audit" class="tab stack hidden">
+        <h1>Nhật ký kiểm toán</h1>
+        <div class="card table-wrap" id="audit-table"></div>
+      </section>
+    </main>
+  </div>
+  <script type="module" src="admin.js"></script>
+</body>
+</html>
